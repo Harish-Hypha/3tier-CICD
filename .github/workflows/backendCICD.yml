@@ -1,0 +1,74 @@
+# .github/workflows/backend-lambda-deploy.yml
+
+name: Backend CICD
+
+on:
+  push:
+    branches: [ "main" ]  # Or your deployment branch
+    paths:
+      - 'backend/**'  # Trigger only on backend code changes
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy_lambda:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x' 
+
+      - name: SonarQube backend Scan  # SonarQube scan step
+        uses: sonarsource/sonarqube-scan-action@master
+        id: sonarqube
+        with:
+          args: >
+            -Dproject.settings=backend/sonar-project.properties
+            -Dsonar.sources=backend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} 
+
+      - name: Check Quality Gate  # Add this step
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        if: always() # Always run to check even if the previous step failed
+        timeout-minutes: 5
+        with:
+          scanTaskId: ${{ steps.sonarqube.outputs.scanTaskId }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }} 
+
+      - name: Zip Lambda Function
+        if: steps.sonarqube.outcome == 'success' 
+        working-directory: backend 
+        run: zip function.zip *   # Zip all files in the backend directory
+        
+      - name: Update Lambda Function Code
+        run: |
+          aws lambda update-function-code \
+            --function-name form \
+            --zip-file fileb://backend/function.zip
+            
+      - name: Publish to Lambda
+        run: aws lambda publish-version --function-name form
+
+      - name: Show Lambda File
+        run: ls -lh backend/function.zip
+
+      - name: Print Lambda Function Details
+        run: aws lambda get-function --function-name form
+
